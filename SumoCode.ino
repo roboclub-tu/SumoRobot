@@ -15,6 +15,7 @@ gearmotors. */
 
 #include <Wire.h>
 #include <Zumo32U4.h>
+#include "MyServo.h"
 
 // Change next line to this if you are using the older Zumo 32U4
 // with a black and green LCD display:
@@ -25,6 +26,8 @@ Zumo32U4ButtonA buttonA;
 Zumo32U4Motors motors;
 Zumo32U4LineSensors lineSensors;
 Zumo32U4ProximitySensors proxSensors;
+
+Servo servo;
 
 unsigned int lineSensorValues[3];
 
@@ -123,7 +126,8 @@ void setup()
   // Uncomment if necessary to correct motor directions:
   //motors.flipLeftMotor(true);
   //motors.flipRightMotor(true);
-
+  servo.attach(6);
+  servo.write(90);
   lineSensors.initThreeSensors();
   proxSensors.initThreeSensors();
 
@@ -138,7 +142,7 @@ void loop()
   {
     // In this state, we just wait for the user to press button
     // A, while displaying the battery voltage every 100 ms.
-
+    servo.write(90);
     motors.setSpeeds(0, 0);
 
     if (justChangedState)
@@ -186,6 +190,7 @@ void loop()
     else
     {
       // We have waited long enough.  Start moving.
+      servo.write(180);
       changeState(StateScanning);
     }
   }
