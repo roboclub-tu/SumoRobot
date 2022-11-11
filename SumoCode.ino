@@ -1,26 +1,8 @@
-/* This example shows how you might use the Zumo 32U4 in a robot
-sumo competition.
-
-It uses the line sensors to detect the white border of the sumo
-ring so it can avoid driving out of the ring (similar to the
-BorderDetect example).  It also uses the Zumo 32U4's proximity
-sensors to scan for nearby opponents and drive towards them.
-
-For this code to work, jumpers on the front sensor array
-must be installed in order to connect pin 4 to RGT and connect
-pin 20 to LFT.
-
-This code was tested on a Zumo 32U4 with 75:1 HP micro metal
-gearmotors. */
-
 #include <Wire.h>
 #include <Zumo32U4.h>
-#include "MyServo.h"
+#include "MyServo.h" 
 
-// Change next line to this if you are using the older Zumo 32U4
-// with a black and green LCD display:
- Zumo32U4LCD display;
-//Zumo32U4OLED display;
+Zumo32U4LCD display;
 
 Zumo32U4ButtonA buttonA;
 Zumo32U4Motors motors;
@@ -37,16 +19,20 @@ unsigned int lineSensorValues[3];
 // different lighting conditions, surfaces, etc.
 const uint16_t lineSensorThreshold = 500;
 
+int proxMinValue = 4;
+
 // The speed that the robot uses when backing up.
 const uint16_t reverseSpeed = 200;
+
+// The amount of time to spend backing up after detecting a
+// border, in milliseconds.
+const uint16_t reverseTime = 200;
 
 // The speed that the robot uses when turning.
 const uint16_t turnSpeed = 400;
 int TURN_DURATION = 200;
 
 // The speed that the robot usually uses when moving forward.
-// You don't want this to be too fast because then the robot
-// might fail to stop when it detects the white border.
 const uint16_t forwardSpeed = 400;
 
 // These two variables specify the speeds to apply to the motors
@@ -61,10 +47,6 @@ const uint16_t veerSpeedHigh = 400;
 // that it is caught in a stalemate (driving forward for several
 // seconds without reaching a border).  400 is full speed.
 const uint16_t rammingSpeed = 400;
-
-// The amount of time to spend backing up after detecting a
-// border, in milliseconds.
-const uint16_t reverseTime = 200;
 
 // The minimum amount of time to spend scanning for nearby
 // opponents, in milliseconds.
@@ -126,8 +108,9 @@ void setup()
   // Uncomment if necessary to correct motor directions:
   //motors.flipLeftMotor(true);
   //motors.flipRightMotor(true);
-  servo.attach(6);
-  servo.write(90);
+
+//  servo.attach(6); 
+//  servo.write(90);
   lineSensors.initThreeSensors();
   proxSensors.initThreeSensors();
 
@@ -142,7 +125,8 @@ void loop()
   {
     // In this state, we just wait for the user to press button
     // A, while displaying the battery voltage every 100 ms.
-    servo.write(90);
+    
+//    servo.write(90);
     motors.setSpeeds(0, 0);
 
     if (justChangedState)
@@ -308,14 +292,14 @@ void loop()
 
       motors.setSpeeds(forwardSpeed, forwardSpeed);
 
-      if (proxSensors.countsLeftWithLeftLeds() >= 4)
+      if (proxSensors.countsLeftWithLeftLeds() >= proxMinValue)
       {
         // Detected something to the left.
         scanDir = DirectionLeft;
         changeState(StateScanning);
       }
 
-      if (proxSensors.countsRightWithRightLeds() >= 4)
+      if (proxSensors.countsRightWithRightLeds() >= proxMinValue)
       {
         // Detected something to the right.
         scanDir = DirectionRight;
