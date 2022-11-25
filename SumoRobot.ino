@@ -1,15 +1,22 @@
 #include <Wire.h>
 #include <Zumo32U4.h>
 #include "MyServo.h" 
+#include "TurnSensor.h"
 
 Zumo32U4LCD display;
 
 Zumo32U4ButtonA buttonA;
 Zumo32U4Motors motors;
+//Zumo32U4IMU imu;
 Zumo32U4LineSensors lineSensors;
 Zumo32U4ProximitySensors proxSensors;
 
 Servo servo;
+
+bool debugMode = false;
+
+// If it doesn't scan, it's just turning almost 180 deg;
+bool doScan = false;
 
 unsigned int lineSensorValues[3];
 
@@ -19,42 +26,33 @@ unsigned int lineSensorValues[3];
 // different lighting conditions, surfaces, etc.
 const uint16_t lineSensorThreshold = 500;
 
-int proxMinValue = 4;
+int proxMinValue = 5;
 
 // The speed that the robot uses when backing up.
-const uint16_t reverseSpeed = 200;
+uint16_t reverseSpeed = 400;
 
 // The amount of time to spend backing up after detecting a
 // border, in milliseconds.
-const uint16_t reverseTime = 200;
+const uint16_t reverseTime = 300;
 
 // The speed that the robot uses when turning.
-const uint16_t turnSpeed = 400;
-int TURN_DURATION = 200;
+uint16_t turnSpeed = 400;
 
 // The speed that the robot usually uses when moving forward.
-const uint16_t forwardSpeed = 400;
+uint16_t forwardSpeed = 400;
 
 // These two variables specify the speeds to apply to the motors
 // when veering left or veering right.  While the robot is
 // driving forward, it uses its proximity sensors to scan for
 // objects ahead of it and tries to veer towards them.
-const uint16_t veerSpeedLow = 0;
-const uint16_t veerSpeedHigh = 400;
-
+uint16_t veerSpeedLow = 100;
+uint16_t veerSpeedHigh = 300;
+ 
 // The speed that the robot drives when it detects an opponent in
 // front of it, either with the proximity sensors or by noticing
 // that it is caught in a stalemate (driving forward for several
 // seconds without reaching a border).  400 is full speed.
-const uint16_t rammingSpeed = 400;
-
-// The minimum amount of time to spend scanning for nearby
-// opponents, in milliseconds.
-const uint16_t scanTimeMin = 200;
-
-// The maximum amount of time to spend scanning for nearby
-// opponents, in milliseconds.
-const uint16_t scanTimeMax = 2100;
+uint16_t rammingSpeed = 400;
 
 // The amount of time to wait between detecting a button press
 // and actually starting to move, in milliseconds.  Typical robot
@@ -105,16 +103,28 @@ bool displayCleared;
 
 void setup()
 {
-  // Uncomment if necessary to correct motor directions:
-  //motors.flipLeftMotor(true);
-  //motors.flipRightMotor(true);
-
+if(debugMode){
+    reverseSpeed = 200;
+    turnSpeed = 200;
+    forwardSpeed = 200;
+    veerSpeedLow = 100;
+    veerSpeedHigh = 300;
+    rammingSpeed = 100;
+}
+  
+  turnSensorSetup();
+  
 //  servo.attach(6); 
 //  servo.write(90);
+//  delay(300);
+//  servo.detach();
+  
   lineSensors.initThreeSensors();
   proxSensors.initThreeSensors();
+  motors.flipRightMotor(true);
 
   changeState(StatePausing);
+  Serial.begin(9600);
 }
 
 void loop()
@@ -174,8 +184,11 @@ void loop()
     else
     {
       // We have waited long enough.  Start moving.
-      servo.write(180);
-      changeState(StateScanning);
+//      servo.attach(6); 
+//      servo.write(180);
+//      delay(300);
+//      servo.detach();
+      changeState(StateDriving);
     }
   }
   else if (state == StateBacking)
@@ -194,50 +207,70 @@ void loop()
     // scanning.
     if (timeInThisState() >= reverseTime)
     {
+      if(debugMode){
+         motors.setSpeeds(0,0);
+         delay(1000);
+       }
       changeState(StateScanning);
     }
   }
   else if (state == StateScanning)
   {
-    // In this state the robot rotates in place and tries to find
-    // its opponent.
+    // In this state the robot rotates in place and tries to find its opponent.
 
     if (justChangedState)
     {
       justChangedState = false;
 //      display.print(F("scan"));
     }
+    
+    turnSensorReset();
 
     if (scanDir == DirectionRight)
     {
       motors.setSpeeds(turnSpeed, -turnSpeed);
-//      delay(TURN_DURATION);
+
+      while((int32_t)turnAngle > -(turnAngle1*120))
+      {
+       int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
+        proxSensors.read();
+        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
+          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
+          && diff==0)
+          {
+              break;
+          }
+        
+        turnSensorUpdate();
+      }
     }
     else
     {
       motors.setSpeeds(-turnSpeed, turnSpeed);
-//      delay(TURN_DURATION);
-    }
-
-    uint16_t time = timeInThisState();
-
-    if (time > scanTimeMax)
-    {
-      // We have not seen anything for a while, so start driving.
-      changeState(StateDriving);
-    }
-    else if (time > scanTimeMin)
-    {
-      // Read the proximity sensors.  If we detect anything with
-      // the front sensor, then start driving forwards.
-      proxSensors.read();
-      if (proxSensors.countsFrontWithLeftLeds() >= 2
-        || proxSensors.countsFrontWithRightLeds() >= 2)
-      {
-        changeState(StateDriving);
+      
+       while((int32_t)turnAngle < (turnAngle1*120))
+       {
+        int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
+        proxSensors.read();
+        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
+          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
+          && diff==0)
+          {
+              break;
+          }
+        
+        turnSensorUpdate();
       }
     }
+
+    motors.setSpeeds(0,0);
+    changeState(StateDriving);
+
+    if(debugMode){
+      delay(2000);
+    }
   }
+  
   else if (state == StateDriving)
   {
     // In this state we drive forward while also looking for the
@@ -296,7 +329,7 @@ void loop()
       {
         // Detected something to the left.
         scanDir = DirectionLeft;
-        changeState(StateScanning);
+        changeState(StateScanning);   
       }
 
       if (proxSensors.countsRightWithRightLeds() >= proxMinValue)
@@ -312,7 +345,7 @@ void loop()
     {
       // We see something with the front sensor but it is not a
       // strong reading.
-
+      
       if (diff >= 1)
       {
         // The right-side reading is stronger, so veer to the right.
