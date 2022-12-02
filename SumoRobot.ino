@@ -1,22 +1,33 @@
+/* This example shows how you might use the Zumo 32U4 in a robot
+sumo competition.
+
+It uses the line sensors to detect the white border of the sumo
+ring so it can avoid driving out of the ring (similar to the
+BorderDetect example).  It also uses the Zumo 32U4's proximity
+sensors to scan for nearby opponents and drive towards them.
+
+For this code to work, jumpers on the front sensor array
+must be installed in order to connect pin 4 to RGT and connect
+pin 20 to LFT.
+
+This code was tested on a Zumo 32U4 with 75:1 HP micro metal
+gearmotors. */
+
 #include <Wire.h>
 #include <Zumo32U4.h>
-#include "MyServo.h" 
-#include "TurnSensor.h"
+#include "MyServo.h"
 
-Zumo32U4LCD display;
+// Change next line to this if you are using the older Zumo 32U4
+// with a black and green LCD display:
+ Zumo32U4LCD display;
+//Zumo32U4OLED display;
 
 Zumo32U4ButtonA buttonA;
 Zumo32U4Motors motors;
-//Zumo32U4IMU imu;
 Zumo32U4LineSensors lineSensors;
 Zumo32U4ProximitySensors proxSensors;
 
 Servo servo;
-
-bool debugMode = false;
-
-// If it doesn't scan, it's just turning almost 180 deg;
-bool doScan = false;
 
 unsigned int lineSensorValues[3];
 
@@ -26,33 +37,42 @@ unsigned int lineSensorValues[3];
 // different lighting conditions, surfaces, etc.
 const uint16_t lineSensorThreshold = 500;
 
-int proxMinValue = 5;
-
 // The speed that the robot uses when backing up.
-uint16_t reverseSpeed = 400;
-
-// The amount of time to spend backing up after detecting a
-// border, in milliseconds.
-const uint16_t reverseTime = 300;
+const uint16_t reverseSpeed = 200;
 
 // The speed that the robot uses when turning.
-uint16_t turnSpeed = 400;
+const uint16_t turnSpeed = 400;
+int TURN_DURATION = 200;
 
 // The speed that the robot usually uses when moving forward.
-uint16_t forwardSpeed = 400;
+// You don't want this to be too fast because then the robot
+// might fail to stop when it detects the white border.
+const uint16_t forwardSpeed = 400;
 
 // These two variables specify the speeds to apply to the motors
 // when veering left or veering right.  While the robot is
 // driving forward, it uses its proximity sensors to scan for
 // objects ahead of it and tries to veer towards them.
-uint16_t veerSpeedLow = 100;
-uint16_t veerSpeedHigh = 300;
- 
+const uint16_t veerSpeedLow = 0;
+const uint16_t veerSpeedHigh = 400;
+
 // The speed that the robot drives when it detects an opponent in
 // front of it, either with the proximity sensors or by noticing
 // that it is caught in a stalemate (driving forward for several
 // seconds without reaching a border).  400 is full speed.
-uint16_t rammingSpeed = 400;
+const uint16_t rammingSpeed = 400;
+
+// The amount of time to spend backing up after detecting a
+// border, in milliseconds.
+const uint16_t reverseTime = 200;
+
+// The minimum amount of time to spend scanning for nearby
+// opponents, in milliseconds.
+const uint16_t scanTimeMin = 200;
+
+// The maximum amount of time to spend scanning for nearby
+// opponents, in milliseconds.
+const uint16_t scanTimeMax = 2100;
 
 // The amount of time to wait between detecting a button press
 // and actually starting to move, in milliseconds.  Typical robot
@@ -103,28 +123,15 @@ bool displayCleared;
 
 void setup()
 {
-if(debugMode){
-    reverseSpeed = 200;
-    turnSpeed = 200;
-    forwardSpeed = 200;
-    veerSpeedLow = 100;
-    veerSpeedHigh = 300;
-    rammingSpeed = 100;
-}
-  
-  turnSensorSetup();
-  
-//  servo.attach(6); 
-//  servo.write(90);
-//  delay(300);
-//  servo.detach();
-  
+  // Uncomment if necessary to correct motor directions:
+  //motors.flipLeftMotor(true);
+  //motors.flipRightMotor(true);
+  servo.attach(6);
+  servo.write(90);
   lineSensors.initThreeSensors();
   proxSensors.initThreeSensors();
-  motors.flipRightMotor(true);
 
   changeState(StatePausing);
-  Serial.begin(9600);
 }
 
 void loop()
@@ -135,8 +142,7 @@ void loop()
   {
     // In this state, we just wait for the user to press button
     // A, while displaying the battery voltage every 100 ms.
-    
-//    servo.write(90);
+    servo.write(90);
     motors.setSpeeds(0, 0);
 
     if (justChangedState)
@@ -184,11 +190,8 @@ void loop()
     else
     {
       // We have waited long enough.  Start moving.
-//      servo.attach(6); 
-//      servo.write(180);
-//      delay(300);
-//      servo.detach();
-      changeState(StateDriving);
+      servo.write(180);
+      changeState(StateScanning);
     }
   }
   else if (state == StateBacking)
@@ -207,70 +210,50 @@ void loop()
     // scanning.
     if (timeInThisState() >= reverseTime)
     {
-      if(debugMode){
-         motors.setSpeeds(0,0);
-         delay(1000);
-       }
       changeState(StateScanning);
     }
   }
   else if (state == StateScanning)
   {
-    // In this state the robot rotates in place and tries to find its opponent.
+    // In this state the robot rotates in place and tries to find
+    // its opponent.
 
     if (justChangedState)
     {
       justChangedState = false;
 //      display.print(F("scan"));
     }
-    
-    turnSensorReset();
 
     if (scanDir == DirectionRight)
     {
       motors.setSpeeds(turnSpeed, -turnSpeed);
-
-      while((int32_t)turnAngle > -(turnAngle1*120))
-      {
-       int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
-        proxSensors.read();
-        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
-          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
-          && diff==0)
-          {
-              break;
-          }
-        
-        turnSensorUpdate();
-      }
+//      delay(TURN_DURATION);
     }
     else
     {
       motors.setSpeeds(-turnSpeed, turnSpeed);
-      
-       while((int32_t)turnAngle < (turnAngle1*120))
-       {
-        int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
-        proxSensors.read();
-        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
-          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
-          && diff==0)
-          {
-              break;
-          }
-        
-        turnSensorUpdate();
+//      delay(TURN_DURATION);
+    }
+
+    uint16_t time = timeInThisState();
+
+    if (time > scanTimeMax)
+    {
+      // We have not seen anything for a while, so start driving.
+      changeState(StateDriving);
+    }
+    else if (time > scanTimeMin)
+    {
+      // Read the proximity sensors.  If we detect anything with
+      // the front sensor, then start driving forwards.
+      proxSensors.read();
+      if (proxSensors.countsFrontWithLeftLeds() >= 2
+        || proxSensors.countsFrontWithRightLeds() >= 2)
+      {
+        changeState(StateDriving);
       }
     }
-
-    motors.setSpeeds(0,0);
-    changeState(StateDriving);
-
-    if(debugMode){
-      delay(2000);
-    }
   }
-  
   else if (state == StateDriving)
   {
     // In this state we drive forward while also looking for the
@@ -325,14 +308,14 @@ void loop()
 
       motors.setSpeeds(forwardSpeed, forwardSpeed);
 
-      if (proxSensors.countsLeftWithLeftLeds() >= proxMinValue)
+      if (proxSensors.countsLeftWithLeftLeds() >= 4)
       {
         // Detected something to the left.
         scanDir = DirectionLeft;
-        changeState(StateScanning);   
+        changeState(StateScanning);
       }
 
-      if (proxSensors.countsRightWithRightLeds() >= proxMinValue)
+      if (proxSensors.countsRightWithRightLeds() >= 4)
       {
         // Detected something to the right.
         scanDir = DirectionRight;
@@ -345,7 +328,7 @@ void loop()
     {
       // We see something with the front sensor but it is not a
       // strong reading.
-      
+
       if (diff >= 1)
       {
         // The right-side reading is stronger, so veer to the right.
