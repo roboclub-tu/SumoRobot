@@ -1,83 +1,68 @@
-/* This example shows how you might use the Zumo 32U4 in a robot
-sumo competition.
-
-It uses the line sensors to detect the white border of the sumo
-ring so it can avoid driving out of the ring (similar to the
-BorderDetect example).  It also uses the Zumo 32U4's proximity
-sensors to scan for nearby opponents and drive towards them.
-
-For this code to work, jumpers on the front sensor array
-must be installed in order to connect pin 4 to RGT and connect
-pin 20 to LFT.
-
-This code was tested on a Zumo 32U4 with 75:1 HP micro metal
-gearmotors. */
-
 #include <Wire.h>
 #include <Zumo32U4.h>
-#include "MyServo.h"
+#include "MyServo.h" 
+#include "TurnSensor.h"
+#include "RemoteConstants.h"
+#include "RemoteDecoder.h"
 
-// Change next line to this if you are using the older Zumo 32U4
-// with a black and green LCD display:
- Zumo32U4LCD display;
-//Zumo32U4OLED display;
+const uint16_t messageTimeoutMs = 115;
+bool messageActive = false;
+uint16_t lastMessageTimeMs = 0;
+RemoteDecoder decoder;
 
+Zumo32U4LCD display;
 Zumo32U4ButtonA buttonA;
 Zumo32U4Motors motors;
 Zumo32U4LineSensors lineSensors;
 Zumo32U4ProximitySensors proxSensors;
+Zumo32U4ButtonB button2;
+Zumo32U4ButtonC button3;
 
 Servo servo;
+
+bool debugMode = false;
+bool lowSpeed = false;
 
 unsigned int lineSensorValues[3];
 
 // When the reading on a line sensor goes below this value, we
 // consider that line sensor to have detected the white border at
-// the edge of the ring.  This value might need to be tuned for
-// different lighting conditions, surfaces, etc.
-const uint16_t lineSensorThreshold = 500;
+// the edge of the ring. 
+ uint16_t lineSensorThreshold = 500;
+
+int proxMinValue = 3;
 
 // The speed that the robot uses when backing up.
-const uint16_t reverseSpeed = 200;
+uint16_t reverseSpeed = 400;
+
+// The amount of time to spend backing up after detecting a
+// border, in milliseconds.
+const uint16_t reverseTime = 300;
 
 // The speed that the robot uses when turning.
-const uint16_t turnSpeed = 400;
-int TURN_DURATION = 200;
+uint16_t turnSpeed = 400;
+uint16_t turnPreciseSpeed = 200;
 
 // The speed that the robot usually uses when moving forward.
-// You don't want this to be too fast because then the robot
-// might fail to stop when it detects the white border.
-const uint16_t forwardSpeed = 400;
+uint16_t forwardSpeed = 300;
 
 // These two variables specify the speeds to apply to the motors
 // when veering left or veering right.  While the robot is
 // driving forward, it uses its proximity sensors to scan for
 // objects ahead of it and tries to veer towards them.
-const uint16_t veerSpeedLow = 0;
-const uint16_t veerSpeedHigh = 400;
-
+uint16_t veerSpeedLow = 100;
+uint16_t veerSpeedHigh = 300;
+ 
 // The speed that the robot drives when it detects an opponent in
 // front of it, either with the proximity sensors or by noticing
 // that it is caught in a stalemate (driving forward for several
 // seconds without reaching a border).  400 is full speed.
-const uint16_t rammingSpeed = 400;
-
-// The amount of time to spend backing up after detecting a
-// border, in milliseconds.
-const uint16_t reverseTime = 200;
-
-// The minimum amount of time to spend scanning for nearby
-// opponents, in milliseconds.
-const uint16_t scanTimeMin = 200;
-
-// The maximum amount of time to spend scanning for nearby
-// opponents, in milliseconds.
-const uint16_t scanTimeMax = 2100;
+uint16_t rammingSpeed = 400;
 
 // The amount of time to wait between detecting a button press
 // and actually starting to move, in milliseconds.  Typical robot
 // sumo rules require 5 seconds of waiting.
-const uint16_t waitTime = 5000;
+const uint16_t waitTime = 0;
 
 // If the robot has been driving forward for this amount of time,
 // in milliseconds, without reaching a border, the robot decides
@@ -121,27 +106,56 @@ bool justChangedState;
 // This gets set whenever we clear the display.
 bool displayCleared;
 
+bool precise = false;
+
 void setup()
 {
-  // Uncomment if necessary to correct motor directions:
-  //motors.flipLeftMotor(true);
-  //motors.flipRightMotor(true);
-  servo.attach(6);
+if(lowSpeed){
+    reverseSpeed = 200;
+    turnSpeed = 200;
+    forwardSpeed = 200;
+    veerSpeedLow = 100;
+    veerSpeedHigh = 300;
+    rammingSpeed = 100;
+}
+
+  servo.attach(6); 
   servo.write(90);
+  
+  turnSensorSetup();
+  
   lineSensors.initThreeSensors();
   proxSensors.initThreeSensors();
+  motors.flipRightMotor(true);
 
   changeState(StatePausing);
+  Serial.begin(9600);
 }
 
 void loop()
 {
+  decoder.service();
   bool buttonPress = buttonA.getSingleDebouncedPress();
+
+  if (button3.isPressed())
+  {
+    display.clear();
+    button3.waitForRelease();
+    lineSensorThreshold+=100;
+  }
+
+  if (button2.isPressed())
+  {
+    display.clear();
+    button2.waitForRelease();
+    lineSensorThreshold-=100;
+  }
 
   if (state == StatePausing)
   {
     // In this state, we just wait for the user to press button
     // A, while displaying the battery voltage every 100 ms.
+    
     servo.write(90);
     motors.setSpeeds(0, 0);
 
@@ -157,10 +171,11 @@ void loop()
       display.gotoXY(0, 1);
       display.print(readBatteryMillivolts());
     }
-
-    if (buttonPress)
+    processRemoteEvents();
+    if (decoder.criticalTime())
     {
       // The user pressed button A, so go to the waiting state.
+      
       changeState(StateWaiting);
     }
   }
@@ -191,7 +206,8 @@ void loop()
     {
       // We have waited long enough.  Start moving.
       servo.write(180);
-      changeState(StateScanning);
+      delay(100);
+      changeState(StateDriving);
     }
   }
   else if (state == StateBacking)
@@ -210,50 +226,82 @@ void loop()
     // scanning.
     if (timeInThisState() >= reverseTime)
     {
+      if(debugMode){
+         motors.setSpeeds(0,0);
+         delay(1000);
+       }
       changeState(StateScanning);
     }
   }
   else if (state == StateScanning)
   {
-    // In this state the robot rotates in place and tries to find
-    // its opponent.
+    // In this state the robot rotates in place and tries to find its opponent.
 
     if (justChangedState)
     {
       justChangedState = false;
 //      display.print(F("scan"));
     }
+    
+    turnSensorReset();
 
     if (scanDir == DirectionRight)
     {
-      motors.setSpeeds(turnSpeed, -turnSpeed);
-//      delay(TURN_DURATION);
+      if(precise){
+        motors.setSpeeds(turnPreciseSpeed, -turnPreciseSpeed);
+        precise=false;
+      }
+      else{
+        motors.setSpeeds(turnSpeed, -turnSpeed);
+      }
+
+      while((int32_t)turnAngle > -(turnAngle45*3))
+      {
+       int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
+        proxSensors.read();
+        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
+          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
+          && diff==0)
+          {
+              break;
+          }
+        
+        turnSensorUpdate();
+      }
     }
     else
     {
-      motors.setSpeeds(-turnSpeed, turnSpeed);
-//      delay(TURN_DURATION);
-    }
-
-    uint16_t time = timeInThisState();
-
-    if (time > scanTimeMax)
-    {
-      // We have not seen anything for a while, so start driving.
-      changeState(StateDriving);
-    }
-    else if (time > scanTimeMin)
-    {
-      // Read the proximity sensors.  If we detect anything with
-      // the front sensor, then start driving forwards.
-      proxSensors.read();
-      if (proxSensors.countsFrontWithLeftLeds() >= 2
-        || proxSensors.countsFrontWithRightLeds() >= 2)
-      {
-        changeState(StateDriving);
+      if(precise){
+        motors.setSpeeds(-turnPreciseSpeed, turnPreciseSpeed);
+        precise=false;
+      }
+      else{
+        motors.setSpeeds(-turnSpeed, turnSpeed);
+      }
+      
+       while((int32_t)turnAngle < (turnAngle45*3))
+       {
+        int diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
+        proxSensors.read();
+        if ((proxSensors.countsFrontWithLeftLeds() >= proxMinValue
+          || proxSensors.countsFrontWithRightLeds() >= proxMinValue)
+          && diff==0)
+          {
+              break;
+          }
+        
+        turnSensorUpdate();
       }
     }
+
+    motors.setSpeeds(0,0);
+    changeState(StateDriving);
+
+    if(debugMode){
+      delay(2000);
+    }
   }
+  
   else if (state == StateDriving)
   {
     // In this state we drive forward while also looking for the
@@ -285,7 +333,6 @@ void loop()
     uint8_t sum = proxSensors.countsFrontWithRightLeds() + proxSensors.countsFrontWithLeftLeds();
     int8_t diff = proxSensors.countsFrontWithRightLeds() - proxSensors.countsFrontWithLeftLeds();
      display.clear();
-     display.print(String(proxSensors.countsFrontWithLeftLeds()) + " - " + String(proxSensors.countsFrontWithRightLeds()));
 
     if (sum >= 10 || timeInThisState() > stalemateTime)
     {
@@ -308,18 +355,20 @@ void loop()
 
       motors.setSpeeds(forwardSpeed, forwardSpeed);
 
-      if (proxSensors.countsLeftWithLeftLeds() >= 4)
+      if (proxSensors.countsLeftWithLeftLeds() >= 3)
       {
         // Detected something to the left.
         scanDir = DirectionLeft;
-        changeState(StateScanning);
+//        changeState(StateScanning);
+//        precise=true;   
       }
 
-      if (proxSensors.countsRightWithRightLeds() >= 4)
+      if (proxSensors.countsRightWithRightLeds() >= 3)
       {
         // Detected something to the right.
         scanDir = DirectionRight;
-        changeState(StateScanning);
+//        changeState(StateScanning);
+//        precise=true;  
       }
 
       ledRed(0);
@@ -328,20 +377,16 @@ void loop()
     {
       // We see something with the front sensor but it is not a
       // strong reading.
-
+      
       if (diff >= 1)
       {
         // The right-side reading is stronger, so veer to the right.
         motors.setSpeeds(veerSpeedHigh, veerSpeedLow);
-//        display.clear();
-//        display.print(F("right"));
       }
       else if (diff <= -1)
       {
         // The left-side reading is stronger, so veer to the left.
         motors.setSpeeds(veerSpeedLow, veerSpeedHigh);
-//         display.clear();
-//        display.print(F("left"));
       }
       else
       {
@@ -392,4 +437,87 @@ void displayUpdated()
 {
   displayTime = millis();
   displayCleared = false;
+}
+void stopCurrentCommand()
+{
+  motors.setSpeeds(0, 0);
+}
+void processRemoteCommand(uint8_t command)
+{
+  switch(command)
+  {
+    case 0x0B:
+    display.print(F("up"));
+    motors.setSpeeds(0, -400);
+    break;
+  
+  case 0x07:
+    display.print(F("up"));
+    motors.setSpeeds(400, 0);
+    break;
+  }
+}
+void processRemoteMessage(const uint8_t * message)
+{
+  // Print the raw message on the first line of the display, in hex.
+  // The first two bytes are usually an address, and the third
+  // byte is usually a command.  The last byte is supposed to be
+  // the bitwise inverse of the third byte, and if that is the
+  // case, then we don't print it.
+  
+  char buffer[9];
+  if (message[2] + message[3] == 0xFF)
+  {
+    sprintf(buffer, "%02X%02X %02X ",
+      message[0], message[1], message[2]);
+  }
+  else
+  {
+    sprintf(buffer, "%02X%02X%02X%02X",
+      message[0], message[1], message[2], message[3]);
+  }
+ Serial.println(buffer);
+
+ 
+
+  // Make sure the address matches what we expect.
+  if (message[0] != remoteAddressByte0 ||
+    message[1] != remoteAddressByte1)
+  {
+    Serial.println("bad addr");
+    return;
+  }
+
+  // Make sure that the last byte is the logical inverse of the
+  // command byte.
+  if (message[2] + message[3] != 0xFF)
+  {
+    Serial.println("bad cmd");
+    return;
+  }
+
+  stopCurrentCommand();
+  processRemoteCommand(message[2]);
+}
+
+void processRemoteEvents()
+{
+  if (decoder.getAndResetMessageFlag())
+  {
+    // The remote decoder received a new message, so record what
+    // time it was received and process it.
+    lastMessageTimeMs = millis();
+    messageActive = true;
+    processRemoteMessage(decoder.getMessage());
+  }
+
+  if (decoder.getAndResetRepeatFlag())
+  {
+    // The remote decoder receiver a "repeat" command, which is
+    // sent about every 109 ms while the button is being held
+    // down.  It contains no data.  We record what time the
+    // repeat command was received so we can know that the
+    // current message is still active.
+    lastMessageTimeMs = millis();
+  }
 }
